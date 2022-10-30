@@ -58,7 +58,7 @@ class Embedder:
 
 def get_embedder(multires, i=0):
 
-    if i == -1:
+    if i == -1: #不做positional encoding
         return tf.identity, 3
 
     embed_kwargs = {
@@ -71,7 +71,7 @@ def get_embedder(multires, i=0):
     }
 
     embedder_obj = Embedder(**embed_kwargs)
-    def embed(x, eo=embedder_obj): return eo.embed(x)
+    def embed(x, eo=embedder_obj): return eo.embed(x) # from x return \gamma(x)
     return embed, embedder_obj.out_dim
 
 
@@ -100,7 +100,7 @@ def init_nerf_model(D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips
             outputs = tf.concat([inputs_pts, outputs], -1)
 
     if use_viewdirs:
-        alpha_out = dense(1, act=None)(outputs)
+        sigma = dense(1, act=None)(outputs)
         bottleneck = dense(256, act=None)(outputs)
         inputs_viewdirs = tf.concat(
             [bottleneck, inputs_views], -1)  # concat viewdirs
@@ -109,8 +109,8 @@ def init_nerf_model(D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips
         # the experiments were actually run with 1 hidden layer, so we will leave it as 1.
         for i in range(1):
             outputs = dense(W//2)(outputs)
-        outputs = dense(3, act=None)(outputs)
-        outputs = tf.concat([outputs, alpha_out], -1)
+        rgb = dense(3, act=None)(outputs)
+        outputs = tf.concat([rgb, sigma], -1) #(Batch,4)
     else:
         outputs = dense(output_ch, act=None)(outputs)
 

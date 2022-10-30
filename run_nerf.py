@@ -8,6 +8,7 @@ import imageio
 import json
 import random
 import time
+import configargparse
 from run_nerf_helpers import *
 from load_llff import load_llff_data
 from load_deepvoxels import load_dv_data
@@ -382,9 +383,11 @@ def create_nerf(args):
 
     input_ch_views = 0
     embeddirs_fn = None
-    if args.use_viewdirs:
+    if args.use_viewdirs: # 模拟反光
         embeddirs_fn, input_ch_views = get_embedder(
             args.multires_views, args.i_embed)
+        # multires_views定义positional embedding使用的频率数目，这个是4
+        # Fourier feature network
     output_ch = 4
     skips = [4]
     model = init_nerf_model(
@@ -394,8 +397,9 @@ def create_nerf(args):
     grad_vars = model.trainable_variables
     models = {'model': model}
 
+    #couarse to fine
     model_fine = None
-    if args.N_importance > 0:
+    if args.N_importance > 0: #
         model_fine = init_nerf_model(
             D=args.netdepth_fine, W=args.netwidth_fine,
             input_ch=input_ch, output_ch=output_ch, skips=skips,
@@ -421,7 +425,7 @@ def create_nerf(args):
         'raw_noise_std': args.raw_noise_std,
     }
 
-    # NDC only good for LLFF-style forward facing data
+    # NDC only good for LLFF-style forward facing data ---------------------------- xiaci
     if args.dataset_type != 'llff' or args.no_ndc:
         print('Not ndc!')
         render_kwargs_train['ndc'] = False
@@ -460,7 +464,7 @@ def create_nerf(args):
 
 def config_parser():
 
-    import configargparse
+    
     parser = configargparse.ArgumentParser()
     parser.add_argument('--config', is_config_file=True,
                         help='config file path')
@@ -576,13 +580,14 @@ def train():
 
     parser = config_parser()
     args = parser.parse_args()
+    # arg存储参数，方式是namespace（访问用args.atrribute）
     
     if args.random_seed is not None:
         print('Fixing random seed', args.random_seed)
         np.random.seed(args.random_seed)
         tf.compat.v1.set_random_seed(args.random_seed)
 
-    # Load data
+    # Load data(三种不同数据集) 578-648
 
     if args.dataset_type == 'llff':
         images, poses, bds, render_poses, i_test = load_llff_data(args.datadir, args.factor,
@@ -614,15 +619,19 @@ def train():
 
     elif args.dataset_type == 'blender':
         images, poses, render_poses, hwf, i_split = load_blender_data(
-            args.datadir, args.half_res, args.testskip)
+            args.datadir, args.half_res, args.testskip) # pose是图片的位姿，hwf=height&width&Focal(焦距)
+        # images:RGBA,poses:图片位姿，hwf：长宽焦距，i_split:train-vali的图片数
         print('Loaded blender', images.shape,
               render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
 
         near = 2.
         far = 6.
+        # 物体的可能距离，这里直接hardcode了
 
-        if args.white_bkgd:
+        if args.white_bkgd: # images.shape=[n=100+100+200,w=800,h=800,4=RGBA]
+            #images[...,-1]=1(opaque)保持RGB不变
+            #images[...,-1]=0(transparent)RGB三通道变为1（白色）
             images = images[..., :3]*images[..., -1:] + (1.-images[..., -1:])
         else:
             images = images[..., :3]
@@ -645,7 +654,7 @@ def train():
         print('Unknown dataset type', args.dataset_type, 'exiting')
         return
 
-    # Cast intrinsics to right types
+    # Cast intrinsics to right types，离谱操作没必要
     H, W, focal = hwf
     H, W = int(H), int(W)
     hwf = [H, W, focal]
@@ -667,9 +676,11 @@ def train():
         with open(f, 'w') as file:
             file.write(open(args.config, 'r').read())
 
+###########################################以上读取资料
+
     # Create nerf model
-    render_kwargs_train, render_kwargs_test, start, grad_vars, models = create_nerf(
-        args)
+    render_kwargs_train, render_kwargs_test,\
+         start, grad_vars, models = create_nerf(args)
 
     bds_dict = {
         'near': tf.cast(near, tf.float32),
@@ -879,7 +890,7 @@ def train():
                 tf.contrib.summary.scalar('loss', loss)
                 tf.contrib.summary.scalar('psnr', psnr)
                 tf.contrib.summary.histogram('tran', trans)
-                if args.N_importance > 0:
+                if args.N_importance > 0: # number of additional fine samples per ray
                     tf.contrib.summary.scalar('psnr0', psnr0)
 
             if i % args.i_img == 0:
