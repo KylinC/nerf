@@ -725,11 +725,15 @@ def train():
 
     # Prepare raybatch tensor if batching random rays
     N_rand = args.N_rand
-    use_batching = not args.no_batching
+    use_batching = not args.no_batching #nerf模型中共有N张照片，共有NxHxW个像素点（pixels），
+    #use_batch为true则随机从中取B个pixels作一个batch（equal treat all the pixels）
+    #use_batch为false则先随机从N中取一张照片，之后随机从中取B个pixels作一个batch
     if use_batching:
         # For random ray batching.
         #
         # Constructs an array 'rays_rgb' of shape [N*H*W, 3, 3] where axis=1 is
+        #                                   axis:   2     1  0
+        # learn axis: https://zhuanlan.zhihu.com/p/31275071
         # interpreted as,
         #   axis=0: ray origin in world space
         #   axis=1: ray direction in world space
