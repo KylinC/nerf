@@ -108,13 +108,17 @@ def render_rays(ray_batch,
         """
         # Function for computing density from model prediction. This value is
         # strictly between [0, 1].
+        # 论文中计算透明度的公式，由密度计算透明度
         def raw2alpha(raw, dists, act_fn=tf.nn.relu): return 1.0 - \
             tf.exp(-act_fn(raw) * dists)
+        #dist是每两个采样点之间的距离
 
         # Compute 'distance' (in time) between each integration time along a ray.
         dists = z_vals[..., 1:] - z_vals[..., :-1]
+        #计算距离数组
 
         # The 'distance' from the last integration time is infinity.
+        # 1e6是浮点数
         dists = tf.concat(
             [dists, tf.broadcast_to([1e10], dists[..., :1].shape)],
             axis=-1)  # [N_rays, N_samples]
@@ -140,8 +144,12 @@ def render_rays(ray_batch,
         # used to express the idea of the ray not having reflected up to this
         # sample yet.
         # [N_rays, N_samples]
+        
+        # transmitters计算方式：
         weights = alpha * \
             tf.math.cumprod(1.-alpha + 1e-10, axis=-1, exclusive=True)
+
+        # cumprod [1,(1-a1),(1-a1)(1-a2),...(1-a1)(...)(1-an-1)]
 
         # Computed weighted color of each sample along each ray.
         rgb_map = tf.reduce_sum(
@@ -150,10 +158,11 @@ def render_rays(ray_batch,
         # Estimated depth map is expected distance.
         depth_map = tf.reduce_sum(weights * z_vals, axis=-1)
 
-        # Disparity map is inverse depth.
+        # Disparity map is inverse depth(1/depth).
         disp_map = 1./tf.maximum(1e-10, depth_map /
                                  tf.reduce_sum(weights, axis=-1))
 
+        # n1 n2 c-> n1, c
         # Sum of weights along each ray. This value is in [0, 1] up to numerical error.
         acc_map = tf.reduce_sum(weights, -1)
 
@@ -179,6 +188,7 @@ def render_rays(ray_batch,
 
     # Decide where to sample along each ray. Under the logic, all rays will be sampled at
     # the same times.
+    # 放置采样点
     t_vals = tf.linspace(0., 1., N_samples)
     if not lindisp:
         # Space integration times linearly between 'near' and 'far'. Same
@@ -189,7 +199,7 @@ def render_rays(ray_batch,
         z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
     z_vals = tf.broadcast_to(z_vals, [N_rays, N_samples])
 
-    # Perturb sampling time along each ray.
+    # Perturb sampling time along each ray. #将放置在一定误差下随机化
     if perturb > 0.:
         # get intervals between samples
         mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
@@ -199,7 +209,13 @@ def render_rays(ray_batch,
         t_rand = tf.random.uniform(z_vals.shape)
         z_vals = lower + (upper - lower) * t_rand
 
-    # Points in space to evaluate model at.
+    # rays_o (N_rays,3)->(N_rays,1,3)
+    # rays_d (N_rays,3)->(N_rays,1,3)
+    # z_vals (N_rays,N_samples)->(N_rays,N_samples,1)
+
+    # rays_d*z_vals -> (N_rays,N_samples,3)
+
+    # Points in space to evaluate model at.#采样点3D坐标
     pts = rays_o[..., None, :] + rays_d[..., None, :] * \
         z_vals[..., :, None]  # [N_rays, N_samples, 3]
 
@@ -208,12 +224,14 @@ def render_rays(ray_batch,
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(
         raw, z_vals, rays_d)
 
+    # Satge 2!!!!!!!!!!!!!!!!!
     if N_importance > 0:
         rgb_map_0, disp_map_0, acc_map_0 = rgb_map, disp_map, acc_map
 
         # Obtain additional integration times to evaluate based on the weights
         # assigned to colors in the coarse model.
         z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
+        # 多采几个采样点点函数：samplePDF
         z_samples = sample_pdf(
             z_vals_mid, weights[..., 1:-1], N_importance, det=(perturb == 0.))
         z_samples = tf.stop_gradient(z_samples)
@@ -244,7 +262,7 @@ def render_rays(ray_batch,
     return ret
 
 
-def batchify_rays(rays_flat, chunk=1024*32, **kwargs):
+def batchify_rays(rays_flat, chunk=1024*32, **kwargs): # 将一次Batch的数据分块（以使得GPU容纳），之后再拼装回来
     """Render rays in smaller minibatches to avoid OOM."""
     all_ret = {}
     for i in range(0, rays_flat.shape[0], chunk):
@@ -274,7 +292,7 @@ def render(H, W, focal,
       rays: array of shape [2, batch_size, 3]. Ray origin and direction for
         each example in batch.
       c2w: array of shape [3, 4]. Camera-to-world transformation matrix.
-      ndc: bool. If True, represent ray origin, direction in NDC coordinates.
+      ndc: bool. If True, represent ray origin, direction in NDC coordinates. NDC coordinates: https://www.sciencedirect.com/topics/computer-science/device-coordinate
       near: float or array of shape [batch_size]. Nearest distance for a ray.
       far: float or array of shape [batch_size]. Farthest distance for a ray.
       use_viewdirs: bool. If True, use viewing direction of a point in space in model.
@@ -314,16 +332,16 @@ def render(H, W, focal,
             H, W, focal, tf.cast(1., tf.float32), rays_o, rays_d)
 
     # Create ray batch
-    rays_o = tf.cast(tf.reshape(rays_o, [-1, 3]), dtype=tf.float32)
-    rays_d = tf.cast(tf.reshape(rays_d, [-1, 3]), dtype=tf.float32)
+    rays_o = tf.cast(tf.reshape(rays_o, [-1, 3]), dtype=tf.float32) #（N_rand,3）
+    rays_d = tf.cast(tf.reshape(rays_d, [-1, 3]), dtype=tf.float32) #（N_rand,3）
     near, far = near * \
-        tf.ones_like(rays_d[..., :1]), far * tf.ones_like(rays_d[..., :1])
+        tf.ones_like(rays_d[..., :1]), far * tf.ones_like(rays_d[..., :1]) #（N_rand,1）
 
     # (ray origin, ray direction, min dist, max dist) for each ray
-    rays = tf.concat([rays_o, rays_d, near, far], axis=-1)
+    rays = tf.concat([rays_o, rays_d, near, far], axis=-1) #（N_rand,3+3+1+1）
     if use_viewdirs:
         # (ray origin, ray direction, min dist, max dist, normalized viewing direction)
-        rays = tf.concat([rays, viewdirs], axis=-1)
+        rays = tf.concat([rays, viewdirs], axis=-1) #（N_rand,3+3+1+1+3）
 
     # Render and reshape
     all_ret = batchify_rays(rays, chunk, **kwargs)
@@ -741,10 +759,13 @@ def train():
         print('get rays')
         # get_rays_np() returns rays_origin=[H, W, 3], rays_direction=[H, W, 3]
         # for each pixel in the image. This stack() adds a new dimension.
-        rays = [get_rays_np(H, W, focal, p) for p in poses[:, :3, :4]]
+        rays = [get_rays_np(H, W, focal, p) for p in poses[:, :3, :4]] # [[ro, H, W, 3],[rd, H, W, 3]]
         rays = np.stack(rays, axis=0)  # [N, ro+rd, H, W, 3]
         print('done, concats')
         # [N, ro+rd+rgb, H, W, 3]
+        # images->images[:, None, ...]: [N,H,W,3]->[N,1,H,W,3]
+        # from einops import rearrange
+        # images = rearrange(images, 'n h w c -> n 1 h w c',c=3)
         rays_rgb = np.concatenate([rays, images[:, None, ...]], 1)
         # [N, H, W, ro+rd+rgb, 3]
         rays_rgb = np.transpose(rays_rgb, [0, 2, 3, 1, 4])
@@ -758,13 +779,14 @@ def train():
         print('done')
         i_batch = 0
 
-    N_iters = 1000000
+    N_iters = 100_000_0 #python中数字可以用'_'分开
+    #科学计数法：1e-7包含7个0（包括一开始那个）
     print('Begin')
     print('TRAIN views are', i_train)
     print('TEST views are', i_test)
     print('VAL views are', i_val)
 
-    # Summary writers
+    # Summary writers：训练中记录traning loss
     writer = tf.contrib.summary.create_file_writer(
         os.path.join(basedir, 'summaries', expname))
     writer.set_as_default()
@@ -776,7 +798,7 @@ def train():
 
         if use_batching:
             # Random over all images
-            batch = rays_rgb[i_batch:i_batch+N_rand]  # [B, 2+1, 3*?]
+            batch = rays_rgb[i_batch:i_batch+N_rand]  # [B, 2+1, 3*?] ，N_rand.default=1024
             batch = tf.transpose(batch, [1, 0, 2])
 
             # batch_rays[i, n, xyz] = ray origin or direction, example_id, 3D position
@@ -822,7 +844,7 @@ def train():
         with tf.GradientTape() as tape:
 
             # Make predictions for color, disparity, accumulated opacity.
-            rgb, disp, acc, extras = render(
+            rgb, disp, acc, extras = render( #rgb是stage2
                 H, W, focal, chunk=args.chunk, rays=batch_rays,
                 verbose=i < 10, retraw=True, **render_kwargs_train)
 

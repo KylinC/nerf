@@ -129,8 +129,11 @@ def get_rays(H, W, focal, c2w):
     # 非合成图片需要由相机内参确定cx，cy（相机中心）
     # z coordinate is always -1
     rays_d = tf.reduce_sum(dirs[..., np.newaxis, :] * c2w[:3, :3], -1)
+    # 转到世界坐标,每一个相机的坐标系是依据自己的方向定义的，z的反方向是镜头方向，x是水平右方向，y是竖直向上方向
+    # pose中的c2w：camera to world （3x4）
+    # python中@是矩阵乘法
     rays_o = tf.broadcast_to(c2w[:3, -1], tf.shape(rays_d))
-    return rays_o, rays_d
+    return rays_o, rays_d # (H,W,3) (H,W,3)
 
 
 def get_rays_np(H, W, focal, c2w):
@@ -184,12 +187,13 @@ def ndc_rays(H, W, focal, near, rays_o, rays_d):
 # Hierarchical sampling helper
 
 def sample_pdf(bins, weights, N_samples, det=False):
-
+    # fine采样是在weight大大地方采样
     # Get pdf
     weights += 1e-5  # prevent nans
     pdf = weights / tf.reduce_sum(weights, -1, keepdims=True)
     cdf = tf.cumsum(pdf, -1)
     cdf = tf.concat([tf.zeros_like(cdf[..., :1]), cdf], -1)
+    # cumulative distribution function
 
     # Take uniform samples
     if det:
@@ -199,7 +203,7 @@ def sample_pdf(bins, weights, N_samples, det=False):
         u = tf.random.uniform(list(cdf.shape[:-1]) + [N_samples])
 
     # Invert CDF
-    inds = tf.searchsorted(cdf, u, side='right')
+    inds = tf.searchsorted(cdf, u, side='right')#找在目标左边的index（upper bound）
     below = tf.maximum(0, inds-1)
     above = tf.minimum(cdf.shape[-1]-1, inds)
     inds_g = tf.stack([below, above], -1)
